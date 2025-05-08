@@ -1,0 +1,19 @@
+{
+    "name": "CMA yt",
+    "version": "0",
+    "description": "Cognitive Manipulation Analyzer for Youtube",
+    "manifest_version": 3,
+    "icons": {
+        "100": "icon.png"
+    },
+    "host_permissions": [
+        "https://content-youtube.googleapis.com/*",
+        "https://youtube.googleapis.com/*"
+    ],
+    "action": {
+        "default_title": "Cognitive Manipulation Analyzer for Youtube"
+    },
+    "background": {
+        "service_worker": "background.js"
+    }
+}
