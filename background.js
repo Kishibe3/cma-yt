@@ -40,6 +40,7 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
             })();
         }
         else if (request.action === 'detect simplified chinese' && request.words.length > 0) {
+            // 限制一次只能翻譯1800字以內
             async function translate(txt) {
                 let chunks = [];
                 for (let i = 0; i < txt.length; i += 1800)

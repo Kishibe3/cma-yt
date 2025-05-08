@@ -41,8 +41,18 @@ function rip_custom_url(video) {
     if (!('user' in video && 'comment' in video)) return;
     let user = structuredClone(video['user']), comment = structuredClone(video['comment']);
     for (let cmt of comment) {
-
+        if (!('replies' in cmt)) continue;
+        let reg = [user[cmt.userid].userurl];
+        for (let rep of cmt['replies']) {
+            rep.text = rep.text.replace(new RegExp(reg.join('|'), 'gi'), '');
+            if (!reg.includes(user[rep.userid].userurl))
+                reg.push(user[rep.userid].userurl);
+        }
     }
+    return {
+        user: user,
+        comment: comment
+    };
 }
 
 // 將一部影片下原本結構化的留言轉換成以留言者為索引的格式
@@ -62,18 +72,18 @@ function flaten(video) {
     return user;
 }
 
-// 用jieba.js將中文斷字後讓Google字典翻譯成繁體中文，抓出可能是簡體的部份
-function find_simplified_chinese(txt) {
-    txt = txt.map(e => e.replace(/[^\u4e00-\u9fff]/g, ''));
+// 讓Google字典翻譯成繁體中文，抓出可能是簡體的部份
+function find_simplified_chinese(txts) {
+    txts = txts.map(e => e.replace(/[^\u4e00-\u9fff]/g, ''));
     return new Promise((resolve, reject) => {
         chrome.runtime.sendMessage({
-            words: txt,
+            words: txts,
             action: 'detect simplified chinese'
         }, function (resp) {
             if (chrome.runtime.lastError)
                 reject(chrome.runtime.lastError);
             else
-                resolve(txt.map((v, i) => v !== resp.words[i]? v : null).filter(e => e !== null));
+                resolve(txts.map((v, i) => v !== resp.words[i]? v : null).filter(e => e !== null));
         });
     });
 }
@@ -87,19 +97,17 @@ async function concurency_limiter(tasks, promise_builder, batch = 70) {
     return retn;
 }
 
-// 對一部影片的所有留言者檢查他們的留言是否有簡體中文
+// 對一部影片的所有留言者檢查他們的留言與帳號簡介是否有簡體中文，不檢查帳號名與自訂url因為字數太短讓Google翻譯容易誤判
 async function detect_suspicious_user(video) {
     if (!('user' in video && 'comment' in video)) return;
-    let user = flaten(video);
+    let user = flaten(rip_custom_url(video));
     for (let [k, v] of Object.entries(user).sort((a, b) => b[1].comments.length - a[1].comments.length))
-        user[k].comments = await find_simplified_chinese(v.comments.map(e => e.text));
+        user[k].comments = await find_simplified_chinese([v.detail, ...v.comments.map(e => e.text)]);
     return user;
 }
 
 
 /*
-07qJwopmCgI
-
 let usercmt = await detect_suspicious_user(videos['XVfaDA8qaFU']);
 // 簡體字
 Object.entries(usercmt).sort((a, b) => b[1].comments.length - a[1].comments.length).filter(e => e[1].comments.length > 0);
