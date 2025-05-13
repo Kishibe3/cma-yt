@@ -72,29 +72,24 @@ function flaten(video) {
     return user;
 }
 
-// 讓Google字典翻譯成繁體中文，抓出可能是簡體的部份
+// 先檢查是否存在不屬於教育部常用國字的字，將這些不屬於的部份再用Google字典檢查是不是日文或簡體
 function find_simplified_chinese(txts) {
-    txts = txts.map(e => e.replace(/[^\u4e00-\u9fff]/g, ''));
+    txts = txts.filter(e => detect_sc(e.replace(/[^\u4e00-\u9fff]/g, '')));
+    if (txts.length === 0)
+        return Promise.resolve([]);
+    let chk_txts = txts.map(e => remove_tc(e.replace(/[^\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}ー]/gu, '')));
     return new Promise((resolve, reject) => {
         chrome.runtime.sendMessage({
-            words: txts,
+            words: chk_txts,
             action: 'detect simplified chinese'
         }, function (resp) {
             if (chrome.runtime.lastError)
                 reject(chrome.runtime.lastError);
-            else
-                resolve(txts.map((v, i) => v !== resp.words[i]? v : null).filter(e => e !== null));
+            else resolve(
+                txts.filter((e, i) => resp.words[i].src !== 'ja' && resp.words[i].trans !== chk_txts[i])
+            );
         });
     });
-}
-
-// 過多Promise同時請求會耗盡網路資源，需要分批請求
-async function concurency_limiter(tasks, promise_builder, batch = 70) {
-    // 將tasks中的元素餵給promise_builder就會建立一個Promise
-    let retn = [];
-    for (let i = 0; i < tasks.length; i += batch)
-        retn.push(...(await Promise.all(tasks.slice(i, Math.min(i + batch, tasks.length)).map(e => promise_builder(e)))));
-    return retn;
 }
 
 // 對一部影片的所有留言者檢查他們的留言與帳號簡介是否有簡體中文，不檢查帳號名與自訂url因為字數太短讓Google翻譯容易誤判

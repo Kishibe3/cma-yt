@@ -23,32 +23,52 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                 let resp = undefined;
                 do {
                     if (access_token === '') {
-                        access_token = (await new Promise(resolve => {
+                        access_token = await new Promise(resolve => {
                             chrome.runtime.sendMessage({
                                 origin: 'cmayt-background.js',
                                 action: 'request token'
                             }, resolve);
-                        })).token;
+                        });
+                        if (access_token)
+                            access_token = access_token.token;
                     }
                     resp = await video_comment(request.video_id);
+                    if (resp) {
+                        let alluser = await concurency_limiter(resp.user, async k => [k, await user(k)], 500);
+                        resp.user = Object.fromEntries(alluser);
+                    }
                 }
                 while (!resp);
-                sendResponse({
-                    user: resp.alluser,
-                    comment: resp.comments
-                });
+                sendResponse(resp);
             })();
         }
         else if (request.action === 'detect simplified chinese' && request.words.length > 0) {
             // 限制一次只能翻譯1800字以內
             async function translate(txt) {
+                function determine_lang(arr) {
+                    let last = arr.at(-1), count = {};
+                    arr.slice(0, -1).forEach(s => count[s] = (count[s] || 0) + 1);
+                    let max = Math.max(...Object.values(count));
+                    let candidates = Object.keys(count).filter(s => count[s] === max);
+                    return candidates.length === 0 ? last :
+                        candidates.length === 1 ? candidates[0] :
+                        candidates.includes(last) ? last :
+                        candidates[Math.floor(Math.random() * candidates.length)];
+                }
                 let chunks = [];
                 for (let i = 0; i < txt.length; i += 1800)
                     chunks.push(txt.slice(i, Math.min(i + 1800, txt.length)));
-                return (await Promise.all(chunks.map(e => 
+                let trans = await Promise.all(chunks.map(e => 
                     fetch('https://clients5.google.com/translate_a/single?dj=1&dt=t&dt=sp&dt=ld&dt=bd&client=dict-chrome-ex&sl=auto&tl=zh-TW&q=' + e)
-                        .then(el => el.json()).then(el => el['sentences'][0]['trans'])
-                ))).join('');
+                        .then(el => el.json()).then(el => {return {
+                            src: el['src'],
+                            trans: el['sentences'][0]['trans']
+                        };})
+                ));
+                return {
+                    src: determine_lang(trans.map(e => e.src)),
+                    trans: trans.map(e => e.trans).join('')
+                };
             }
             (async () => {
                 let resp = await Promise.all(request.words.map(e => translate(e)));
@@ -57,10 +77,52 @@ chrome.runtime.onMessage.addListener(function (request, sender, sendResponse) {
                 });
             })();
         }
+        else if (request.action === 'scan most view videos') {
+            (async () => {
+                let videos = await most_view_videos('view');
+                sendResponse({
+                    videos: videos
+                });
+            })();
+        }
+        else if (request.action === 'scan most comments videos') {
+            (async () => {
+                let videos = await most_view_videos('comment');
+                sendResponse({
+                    videos: videos
+                });
+            })();
+        }
             
         return true;
     }
 });
+
+// 從playboard.co的api取得過去30天内台灣每日最多觀看或評論的政治與新聞影片前100名
+async function most_popular_videos(type = 'view') {
+    if (type === 'comment')
+        cat = 23;
+    else
+        cat = 20;
+    async function get_video_id(day) {
+        let video_ids = [], cursor = '';
+        while (true) {
+            try {
+                let js = await fetch(`https://lapi.playboard.co/v1/chart/video?locale=en&countryCode=TW&period=${day}&size=25&chartTypeId=20&periodTypeId=2&indexDimensionId=${cat}&indexTypeId=4&indexTarget=25&indexCountryCode=TW&cursor=${cursor}`)
+                    .then(e => e.json());
+                cursor = js['cursor'];
+                video_ids.push(...js['list'].map(e => e.itemId));
+            }
+            catch (e) {
+                break;
+            }
+        }
+        await new Promise(e => setTimeout(e, 60000));
+        return video_ids;
+    }
+    let td = new Date();
+    return Array.from(new Set((await concurency_limiter(Array.from({ length: 30 }, (_, i) => i + 1).map(e => Date.UTC(td.getUTCFullYear(), td.getUTCMonth(), td.getUTCDate() - e) / 1000), get_video_id, 3)).flat()));
+}
 
 async function video_comment(video_id) {
     let comments = [], resp = {}, page_token = '';
@@ -73,7 +135,7 @@ async function video_comment(video_id) {
             }
         });
         resp = await resp.json();
-        if ('error' in resp && resp['error']['code'] == 401) {
+        if ('error' in resp.token) {
             console.log(resp['error']['message']);
             access_token = '';
             return;
@@ -93,12 +155,10 @@ async function video_comment(video_id) {
         else
             return Promise.resolve(null);
     }));
-    let alluser = new Set([
+    let alluser = Array.from(new Set([
 		...comments.map(e => e['snippet']['topLevelComment']['snippet']['authorChannelId']['value']),
 		...replies.filter(e => e !== null).map(e => e.map(el => el.userid)).flat()
-	]);
-    alluser = await concurency_limiter(Array.from(alluser), async k => [k, await user(k)], 500);
-	alluser = Object.fromEntries(alluser);
+	]));
     comments = comments.map((e, i) => {
         delete e['etag'];
         delete e['kind'];
@@ -112,7 +172,10 @@ async function video_comment(video_id) {
         delete e['snippet'];
         return e;
     });
-    return { alluser, comments };
+    return {
+        user: alluser,
+        comment: comments
+    };
 }
 
 async function comment_reply(comment_id) {
